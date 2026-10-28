@@ -1,15 +1,20 @@
 """Portable release-check and untrained-example contracts; no corpus or hardware."""
 
 import hashlib
+import contextlib
+import io
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+import subprocess
+from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parents[2] / "tools"
 sys.path.insert(0, str(TOOLS))
 from check_repository import CORE_TEST_MODULES, EXTERNAL_TESTS, REQUIRED_FIXTURES, core_suite, _flatten
+from check_repository import _print_failed_process, _python_tests
 from generate_example_models import generate_examples
 
 
@@ -75,6 +80,38 @@ class RepositoryToolsTests(unittest.TestCase):
         self.assertNotIn("pytorch212_p310", text)
         self.assertLess(text.index("MODEL_STUDIO_PYTHON"), text.index(".venv"))
         self.assertLess(text.index(".venv"), text.index('STUDIO_PYTHON=python'))
+
+    def test_failed_child_stdout_and_stderr_are_visible_without_json(self):
+        failure = subprocess.CompletedProcess(["synthetic-fixture"], 1,
+            stdout="Traceback: synthetic child failure\n", stderr="AssertionError: preserved diagnostic\n")
+        visible = io.StringIO()
+        with contextlib.redirect_stderr(visible):
+            _print_failed_process(failure, "fixture_phase")
+        self.assertIn(failure.stdout, visible.getvalue())
+        self.assertIn(failure.stderr, visible.getvalue())
+        self.assertIn("fixture_phase", visible.getvalue())
+        visible = io.StringIO()
+        with contextlib.redirect_stderr(visible):
+            _print_failed_process(subprocess.CompletedProcess([], 0, "quiet success", ""), "success")
+        self.assertEqual(visible.getvalue(), "")
+
+    def test_skipped_child_suite_still_fails_the_strict_gate(self):
+        import torch
+        previous_threads = torch.get_num_threads()
+        def deliberate_fixture_skip():
+            raise unittest.SkipTest("synthetic skip must remain a failed verification")
+        suite = unittest.TestSuite([unittest.FunctionTestCase(deliberate_fixture_skip)])
+        output = self.directory / "strict_skip_fixture.json"
+        try:
+            with patch("check_repository.core_suite", return_value=suite), contextlib.redirect_stdout(io.StringIO()):
+                status = _python_tests(TOOLS.parents[1], output, False)
+        finally:
+            torch.set_num_threads(previous_threads)
+        report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(status, 1)
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["tests"], 1)
+        self.assertEqual(len(report["skipped"]), 1)
 
 
 if __name__ == "__main__":

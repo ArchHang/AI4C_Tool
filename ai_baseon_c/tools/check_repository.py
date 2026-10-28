@@ -77,6 +77,17 @@ def _executable(value, name):
     return Path(path).resolve()
 
 
+def _print_failed_process(result, name):
+    """Keep failed child tracebacks visible even when the JSON artifact is lost."""
+    if result.returncode == 0:
+        return
+    for channel in ("stdout", "stderr"):
+        value = getattr(result, channel, None)
+        if value:
+            print(f"[{name}] captured {channel}:\n{value}", file=sys.stderr,
+                  end="" if value.endswith("\n") else "\n", flush=True)
+
+
 def check_repository(root=ROOT, *, build_system="cmake", compiler="gcc", cmake="cmake", make="make",
                      generator="Ninja", require_gui=False):
     root = Path(root).resolve()
@@ -113,6 +124,7 @@ def check_repository(root=ROOT, *, build_system="cmake", compiler="gcc", cmake="
                                 text=True, capture_output=True, timeout=timeout)
         report["steps"].append({"name": name, "argv": [str(argument) for argument in arguments],
             "returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr})
+        _print_failed_process(result, name)
         if result.returncode and not allow_failure:
             raise RuntimeError(name + " failed:\n" + result.stdout + result.stderr)
         print(name + (": passed" if result.returncode == 0 else ": failed"), flush=True)
