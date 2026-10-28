@@ -1,9 +1,12 @@
 """CPU reference evaluation using explicit graph semantics and local test data."""
 
+import ast
 import csv
+import io
 import math
 from pathlib import Path
 import time
+import tokenize
 import zipfile
 
 import numpy as np
@@ -19,6 +22,7 @@ from .compression import _validated_spec
 MAX_DATA_BYTES = 512 * 1024 * 1024
 MAX_INPUT_ELEMENTS = 64 * 1024 * 1024
 MAX_SAMPLES = 100000
+MAX_NUMPY_HEADER_BYTES = 10000
 BATCH_SIZE = 32
 # Evaluation admission limits, separate from converter/static-analysis limits.
 # These guard local CPU execution; they are not measurements of process RSS.
@@ -205,10 +209,57 @@ def _arrays(inputs, labels, spec, limit, plan=None):
         None if labels is None else labels[:count].copy())
 
 
+def _read_numpy_header(stream, size):
+    """Read bounded NPY metadata using public NumPy APIs, without array allocation."""
+    try:
+        version = np.lib.format.read_magic(stream)
+        if version not in ((1, 0), (2, 0), (3, 0)):
+            raise ConversionError(f"Unsupported NPY format version: {version}")
+        length_size = 2 if version == (1, 0) else 4
+        length_bytes = stream.read(length_size)
+        if len(length_bytes) != length_size:
+            raise ConversionError("Truncated NPY header length")
+        header_size = int.from_bytes(length_bytes, "little")
+        # Check the advertised length before reading it. This also bounds reads
+        # from compressed NPZ members, not just later NumPy array allocation.
+        if header_size > MAX_NUMPY_HEADER_BYTES:
+            raise ConversionError(f"NPY header exceeds the {MAX_NUMPY_HEADER_BYTES}-byte capacity")
+        if stream.tell() + header_size > size:
+            raise ConversionError("Truncated NPY header")
+        header_bytes = stream.read(header_size)
+        if len(header_bytes) != header_size:
+            raise ConversionError("Truncated NPY header")
+        if version in ((1, 0), (2, 0)):
+            reader = (np.lib.format.read_array_header_1_0 if version == (1, 0)
+                      else np.lib.format.read_array_header_2_0)
+            shape, fortran_order, dtype = reader(io.BytesIO(length_bytes + header_bytes),
+                                                max_header_size=MAX_NUMPY_HEADER_BYTES)
+        else:
+            # NPY 3.0 uses UTF-8 instead of 1.0/2.0's latin1. NumPy exposes
+            # public header readers for 1.0/2.0 only; parse the bounded literal
+            # metadata for 3.0 without evaluating code or loading its payload.
+            metadata = ast.literal_eval(header_bytes.decode("utf-8"))
+            if not isinstance(metadata, dict) or set(metadata) != {"descr", "fortran_order", "shape"}:
+                raise ConversionError("NPY header must contain descr, fortran_order and shape")
+            shape = metadata["shape"]
+            fortran_order = metadata["fortran_order"]
+            dtype = np.lib.format.descr_to_dtype(metadata["descr"])
+        if (not isinstance(shape, tuple)
+                or any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in shape)):
+            raise ConversionError("NPY header shape must be a tuple of nonnegative integers")
+        if not isinstance(fortran_order, bool):
+            raise ConversionError("NPY header fortran_order must be a boolean")
+        return shape, dtype
+    except ConversionError:
+        raise
+    except (ValueError, TypeError, SyntaxError, EOFError, OverflowError, RecursionError,
+            tokenize.TokenError) as error:
+        raise ConversionError(f"Invalid NPY header: {error}") from error
+
+
 def _inspect_numpy_header(stream, size, spec, labels=False, count=None):
     """Reject huge or object NPY payloads before NumPy allocates the array."""
-    version = np.lib.format.read_magic(stream)
-    shape, _, dtype = np.lib.format._read_array_header(stream, version, max_header_size=10000)
+    shape, dtype = _read_numpy_header(stream, size)
     if dtype.hasobject:
         raise ConversionError("Object arrays are forbidden; pickle loading is disabled")
     if labels:

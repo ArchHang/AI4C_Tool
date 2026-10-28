@@ -1,6 +1,8 @@
 """Structured reconstruction admission, dependency and label-isolation tests."""
 
 from copy import deepcopy
+import itertools
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -159,11 +161,112 @@ class ReconstructionTests(unittest.TestCase):
         kept, trace = reconstruction._obs_groups(features, weight, 1, 2)
         self.assertEqual(kept.tolist(), [1, 2])
         self.assertEqual(trace[0]["channel"], 0)
+        self.assertEqual(trace[0]["tied_channels"], [0, 1])
         _, _, fitted = reconstruction._affine_fit(features[:, kept], target,
             weight[:, kept], torch.tensor([0.3]), reconstruction.CONV_DAMPING)
         _, _, magnitude_fit = reconstruction._affine_fit(features[:, :2], target,
             weight[:, :2], torch.tensor([0.3]), reconstruction.CONV_DAMPING)
         self.assertLess(fitted["calibration_rmse_after"], magnitude_fit["calibration_rmse_after"] * 0.05)
+
+    def test_obs_duplicate_choice_is_stable_across_valid_inverse_orders_and_numpy(self):
+        # Equivalent SPD inverses can differ by one ULP in their diagonal.
+        # Exercise actual alternative solves rather than changing the expected
+        # channel to whichever exact floating minimum a particular BLAS finds.
+        u = torch.linspace(-2, 2, 100, dtype=torch.float64)
+        features = torch.stack((u, u, torch.sin(3 * u)), 1)
+        weight = torch.tensor([[1.0, 1.0, 0.1]], dtype=torch.float64)
+        centered = features - features.mean(0)
+        gram = centered.t() @ centered / len(features)
+        ridge = float(gram.diag().mean()) * reconstruction.CONV_DAMPING
+        regularized = gram + ridge * torch.eye(3, dtype=torch.float64)
+        inverses = []
+        for order in itertools.permutations(range(3)):
+            indices = torch.tensor(order)
+            reverse = torch.argsort(indices)
+            permuted = torch.linalg.inv(regularized[indices[:, None], indices])
+            inverses.append((str(order), permuted[reverse[:, None], reverse]))
+        inverses.append(("numpy.linalg.inv", torch.from_numpy(np.linalg.inv(regularized.numpy()))))
+        for name, inverse in inverses:
+            with self.subTest(solver=name):
+                residual = regularized @ inverse - torch.eye(3, dtype=torch.float64)
+                self.assertLess(float(residual.abs().max()), 1e-9)
+                with patch.object(torch.linalg, "inv", return_value=inverse.clone()):
+                    kept, trace = reconstruction._obs_groups(features, weight, 1, 2)
+                self.assertEqual(kept.tolist(), [1, 2])
+                self.assertEqual(trace[0]["tied_channels"], [0, 1])
+                self.assertGreaterEqual(trace[0]["quadratic_loss"], trace[0]["minimum_quadratic_loss"])
+                self.assertLessEqual(trace[0]["quadratic_loss"] - trace[0]["minimum_quadratic_loss"],
+                                     trace[0]["tie_absolute_tolerance"])
+
+    def test_obs_roundoff_ties_are_relative_minimum_anchored_and_preserve_zero(self):
+        relative = reconstruction.OBS_TIE_EPS_MULTIPLIER * math.ulp(1.0) * 3
+        for scale in (1e-200, 1.0, 1e200):
+            candidates = [(scale * (1 + relative * 1.5), 0),
+                          (scale * (1 + relative * 0.75), 1), (scale, 2)]
+            for order in (candidates, list(reversed(candidates))):
+                selected, report = reconstruction._select_obs_candidate(order, 3)
+                self.assertEqual(selected[1], 1)
+                self.assertEqual(report["tied_channels"], [1, 2])
+                self.assertEqual(report["minimum_quadratic_loss"], scale)
+            # A distinguishable lower cost must win, regardless of channel ID.
+            selected, _ = reconstruction._select_obs_candidate(
+                [(scale * (1 + relative * 4), 0), (scale, 2)], 3)
+            self.assertEqual(selected[1], 2)
+        selected, report = reconstruction._select_obs_candidate([(1e-300, 0), (0.0, 2)], 3)
+        self.assertEqual(selected[1], 2)
+        self.assertEqual(report["tie_absolute_tolerance"], 0.0)
+        self.assertEqual(report["tied_channels"], [2])
+        selected, _ = reconstruction._select_obs_candidate([(0.0, 2), (0.0, 0)], 3)
+        self.assertEqual(selected[1], 0)
+
+    def test_obs_two_tap_groups_and_genuinely_lower_loss(self):
+        generator = torch.Generator().manual_seed(722)
+        unique = torch.randn((128, 4), generator=generator, dtype=torch.float64)
+        features = torch.cat((unique[:, :2], unique[:, :2], unique[:, 2:]), 1)
+        weight = torch.tensor([[1.0, 0.3, 1.0, 0.3, 0.1, 0.05]], dtype=torch.float64)
+        kept, trace = reconstruction._obs_groups(features, weight, 2, 2)
+        self.assertEqual(kept.tolist(), [1, 2])
+        self.assertEqual(trace[0]["tied_channels"], [0, 1])
+        # Break the mathematical symmetry by a gap well outside roundoff.
+        weight[:, :2] *= 1.00001
+        kept, trace = reconstruction._obs_groups(features, weight, 2, 2)
+        self.assertEqual(kept.tolist(), [0, 2])
+        self.assertEqual(trace[0]["tied_channels"], [1])
+
+    def test_obs_multistep_losses_match_independent_constrained_primal_residual(self):
+        generator = torch.Generator().manual_seed(723)
+        features = torch.randn((80, 8), generator=generator, dtype=torch.float64)
+        weight = torch.randn((3, 8), generator=generator, dtype=torch.float64)
+        centered = features - features.mean(0)
+        gram = centered.t() @ centered / len(features)
+        regularized = gram + float(gram.diag().mean()) * reconstruction.CONV_DAMPING * torch.eye(8, dtype=torch.float64)
+
+        def constrained_loss(deleted):
+            # Independently minimize the ORIGINAL primal quadratic with all
+            # deleted coefficients fixed to zero; no inverse/Schur updates.
+            removed = torch.tensor([column for channel in sorted(deleted)
+                                    for column in (2 * channel, 2 * channel + 1)])
+            retained = torch.tensor([column for channel in range(4) if channel not in deleted
+                                     for column in (2 * channel, 2 * channel + 1)])
+            right = weight[:, removed] @ regularized[removed[:, None], retained]
+            fitted = weight[:, retained] + torch.linalg.solve(
+                regularized[retained[:, None], retained], right.t()).t()
+            approximation = torch.zeros_like(weight)
+            approximation[:, retained] = fitted
+            delta = approximation - weight
+            return float((delta @ regularized * delta).sum())
+
+        kept, trace = reconstruction._obs_groups(features, weight, 2, 2)
+        deleted, previous = set(), 0.0
+        for step in trace:
+            candidate_losses = {channel: constrained_loss(deleted | {channel}) - previous
+                                for channel in range(4) if channel not in deleted}
+            self.assertAlmostEqual(step["minimum_quadratic_loss"], min(candidate_losses.values()), delta=1e-10)
+            deleted.add(step["channel"])
+            total = constrained_loss(deleted)
+            self.assertAlmostEqual(step["quadratic_loss"], total - previous, delta=1e-10)
+            previous = total
+        self.assertEqual(kept.tolist(), [channel for channel in range(4) if channel not in deleted])
 
     def test_returned_checkpoint_tensors_remain_mutable_for_further_work(self):
         with tempfile.TemporaryDirectory(dir=TEST_ROOT) as directory:

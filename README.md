@@ -1,5 +1,7 @@
 # AI4C Tool
 
+[![Portable checks](https://github.com/ArchHang/AI4C_Tool/actions/workflows/portable-check.yml/badge.svg)](https://github.com/ArchHang/AI4C_Tool/actions/workflows/portable-check.yml)
+
 面向资源受限设备的 **C11 神经网络推理库**与 **PyTorch → C 模型转换工作台**。
 支持已定义的 CNN、单层 tanh RNN、单层 LSTM，提供 FP32 与混合 INT8 推理。
 C 运行时不依赖 MMU、Python、操作系统或动态堆分配；激活与工作区由调用方管理。

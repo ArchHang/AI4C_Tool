@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -26,7 +27,7 @@ from model_converter.schema import ConversionError, parse_spec
 from model_studio.analysis import ModelSession
 from model_studio.compression import prune_session, save_checkpoint
 from model_studio.validation import build_model, evaluate_sessions
-from model_studio.validation import _evaluation_plan
+from model_studio.validation import _evaluation_plan, _inspect_numpy_header, _numpy_data
 
 
 def make_session(kind="cnn", recurrent_prefix="rnn.", head_prefix="head."):
@@ -345,6 +346,148 @@ class CompressionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ConversionError, "Decompressed"):
                     evaluate_sessions(session, session, dataset)
                 loader.assert_not_called()
+
+    @staticmethod
+    def _npy_bytes(array, version):
+        stream = io.BytesIO()
+        np.lib.format.write_array(stream, array, version=version, allow_pickle=False)
+        return stream.getvalue()
+
+    @staticmethod
+    def _raw_npy(header, version=(3, 0), payload=b""):
+        if isinstance(header, str):
+            header = header.encode("utf-8" if version == (3, 0) else "latin1")
+        length_size = 2 if version == (1, 0) else 4
+        return b"\x93NUMPY" + bytes(version) + len(header).to_bytes(length_size, "little") + header + payload
+
+    def test_npy_versions_and_npz_members_preserve_numeric_data(self):
+        session, _ = make_session("rnn")
+        arrays = [np.arange(30, dtype=np.uint8).reshape(2, 15),
+                  np.asfortranarray(np.arange(30, dtype=np.float32).reshape(2, 5, 3) / 32),
+                  (np.arange(30, dtype=np.float64).reshape(2, 15) / 32).astype(">f8")]
+        labels = np.array([0, 2], dtype=">i8")
+        with tempfile.TemporaryDirectory(prefix=".studio-test-", dir=LIBRARY) as directory:
+            for version in ((1, 0), (2, 0), (3, 0)):
+                for array in arrays:
+                    for suffix in (".npy", ".npz"):
+                        with self.subTest(version=version, dtype=str(array.dtype), suffix=suffix):
+                            path = Path(directory) / ("data" + suffix)
+                            if suffix == ".npy":
+                                path.write_bytes(self._npy_bytes(array, version))
+                            else:
+                                with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                                    archive.writestr("inputs.npy", self._npy_bytes(array, version))
+                                    archive.writestr("labels.npy", self._npy_bytes(labels, version))
+                            actual, actual_labels = _numpy_data(path, session.spec, 2)
+                            np.testing.assert_array_equal(actual, array.reshape(2, 5, 3))
+                            self.assertTrue(actual.flags.c_contiguous)
+                            self.assertEqual(actual.dtype, np.uint8 if array.dtype == np.uint8 else np.float32)
+                            if suffix == ".npz":
+                                np.testing.assert_array_equal(actual_labels, labels)
+                            else:
+                                self.assertIsNone(actual_labels)
+
+    def test_numpy_header_inspection_requires_only_public_numpy_apis(self):
+        session, _ = make_session("rnn")
+        array = np.zeros((2, 15), np.float32)
+        fixtures = [(version, self._npy_bytes(array, version)) for version in ((1, 0), (2, 0), (3, 0))]
+        # Old NumPy may still export the private name removed in NumPy 2.5.
+        # Supply only documented functions; the readers' own implementation is
+        # NumPy's responsibility and may internally use private module globals.
+        public_format = SimpleNamespace(**{name: getattr(np.lib.format, name) for name in
+            ("read_magic", "read_array_header_1_0", "read_array_header_2_0", "descr_to_dtype")})
+        with patch("model_studio.validation.np.lib.format", public_format):
+            for version, content in fixtures:
+                with self.subTest(version=version):
+                    stream = io.BytesIO(content)
+                    self.assertEqual(_inspect_numpy_header(stream, len(content), session.spec), (2, 15))
+                    self.assertEqual(len(content) - stream.tell(), array.nbytes)
+
+    def test_malformed_numpy_headers_rejected_before_payload_loading(self):
+        session, _ = make_session("rnn")
+        good = {"descr": "|u1", "fortran_order": False, "shape": (2, 15)}
+        for version in ((1, 0), (2, 0), (3, 0)):
+            cases = [b"not an NPY file", b"\x93NUMPY\x04\x00",
+                     b"\x93NUMPY" + bytes(version) + b"\x01",
+                     self._raw_npy("{", version),
+                     self._raw_npy("__import__('os').getcwd()", version),
+                     self._raw_npy(repr({"descr": "|u1", "shape": (2, 15)}), version),
+                     self._raw_npy(repr(dict(good, unexpected=1)), version),
+                     self._raw_npy(repr(dict(good, fortran_order=0)), version),
+                     self._raw_npy(repr(dict(good, shape=[2, 15])), version),
+                     self._raw_npy(repr(dict(good, shape=(2, -15))), version),
+                     self._raw_npy(repr(dict(good, shape=(True, 15))), version),
+                     self._raw_npy(repr(dict(good, descr="nonsense")), version),
+                     self._raw_npy(repr(good), version, b"\x00" * 29),
+                     self._raw_npy(repr(good), version, b"\x00" * 31)]
+            if version == (3, 0):
+                cases += [self._raw_npy(b"\xff", version),
+                          self._raw_npy("[" * 300 + "]" * 300, version)]
+            with tempfile.TemporaryDirectory(prefix=".studio-test-", dir=LIBRARY) as directory:
+                for index, content in enumerate(cases):
+                    for suffix in (".npy", ".npz"):
+                        with self.subTest(version=version, case=index, suffix=suffix):
+                            path = Path(directory) / ("bad" + suffix)
+                            if suffix == ".npy":
+                                path.write_bytes(content)
+                            else:
+                                with zipfile.ZipFile(path, "w") as archive:
+                                    archive.writestr("inputs.npy", content)
+                            with patch("model_studio.validation.np.load") as loader:
+                                with self.assertRaises(ConversionError):
+                                    evaluate_sessions(session, session, path)
+                                loader.assert_not_called()
+
+    def test_numpy_header_size_is_bounded_before_read_or_parse(self):
+        session, _ = make_session("rnn")
+        header = repr({"descr": "|u1", "fortran_order": False, "shape": (2, 15)}).encode()
+        for version in ((1, 0), (2, 0), (3, 0)):
+            content = self._raw_npy(header.ljust(10000, b" "), version, b"\x00" * 30)
+            self.assertEqual(_inspect_numpy_header(io.BytesIO(content), len(content), session.spec), (2, 15))
+            for advertised in (10001, 65535 if version == (1, 0) else 2 ** 32 - 1):
+                prefix = b"\x93NUMPY" + bytes(version) + advertised.to_bytes(2 if version == (1, 0) else 4, "little")
+                stream = io.BytesIO(prefix)
+                with self.subTest(version=version, advertised=advertised):
+                    with patch.object(stream, "read", wraps=stream.read) as reader:
+                        with self.assertRaisesRegex(ConversionError, "capacity"):
+                            _inspect_numpy_header(stream, advertised + len(prefix), session.spec)
+                        self.assertLessEqual(max(call.args[0] for call in reader.call_args_list), 8)
+            truncated = self._raw_npy(header, version)[:-1]
+            with self.subTest(version=version), self.assertRaisesRegex(ConversionError, "Truncated"):
+                _inspect_numpy_header(io.BytesIO(truncated), len(truncated), session.spec)
+
+    def test_numpy_header_object_dtype_unicode_fields_and_byte_capacity(self):
+        session, _ = make_session("rnn")
+        for version in ((1, 0), (2, 0), (3, 0)):
+            for dtype in ("|O", "|b1", "<i2", [("field", "<f4")]):
+                header = {"descr": dtype, "fortran_order": False, "shape": (2, 15)}
+                content = self._raw_npy(repr(header), version)
+                with self.subTest(version=version, dtype=dtype), self.assertRaises(ConversionError):
+                    _inspect_numpy_header(io.BytesIO(content), len(content), session.spec)
+            content = self._npy_bytes(np.zeros((2, 15), np.float64), version)
+            with patch("model_studio.validation.MAX_DATA_BYTES", 200):
+                with self.subTest(version=version), self.assertRaisesRegex(ConversionError, "byte capacity"):
+                    _inspect_numpy_header(io.BytesIO(content), len(content), session.spec)
+        # A real UTF-8 descriptor is decoded correctly as 3.0, then rejected by
+        # the application's numeric-input contract rather than treated as latin1.
+        content = self._npy_bytes(np.zeros((2, 15), dtype=[("频域", "<f4")]), (3, 0))
+        with self.assertRaisesRegex(ConversionError, "inputs must be uint8"):
+            _inspect_numpy_header(io.BytesIO(content), len(content), session.spec)
+
+    def test_npz_v3_label_header_checks_precede_payload_loading(self):
+        session, _ = make_session("rnn")
+        inputs = self._npy_bytes(np.zeros((2, 15), np.uint8), (3, 0))
+        with tempfile.TemporaryDirectory(prefix=".studio-test-", dir=LIBRARY) as directory:
+            path = Path(directory) / "labels.npz"
+            for labels in (np.zeros(1, np.int64), np.zeros(2, np.bool_), np.zeros(2, np.float32)):
+                with self.subTest(dtype=str(labels.dtype), shape=labels.shape):
+                    with zipfile.ZipFile(path, "w") as archive:
+                        archive.writestr("inputs.npy", inputs)
+                        archive.writestr("labels.npy", self._npy_bytes(labels, (3, 0)))
+                    with patch("model_studio.validation.np.load") as loader:
+                        with self.assertRaisesRegex(ConversionError, "labels"):
+                            evaluate_sessions(session, session, path)
+                        loader.assert_not_called()
 
     def test_cpu_large_graph_budgets_refuse_before_data_or_model_allocation(self):
         session, _ = make_session("rnn")

@@ -20,6 +20,7 @@ from .advanced_pruning import (MAX_ADVANCED_WORKING_BYTES, MAX_CALIBRATION_SAMPL
 MAX_PATCH_POSITIONS = 32
 CONV_DAMPING = 1e-3
 HEAD_DAMPING_CANDIDATES = (1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0)
+OBS_TIE_EPS_MULTIPLIER = 64
 
 
 def validate_reconstruction_budget(spec, amount):
@@ -97,12 +98,35 @@ def _patches(values, kernel):
     return patches.permute(0, 2, 1, 3).reshape(-1, values.shape[1] * kernel).double(), positions
 
 
+def _select_obs_candidate(candidates, columns):
+    """Break roundoff-level loss ties by original channel, not BLAS rounding.
+
+    The relative window is 64 * FP64 epsilon * current covariance width. It
+    accounts for reduction/solve roundoff, rather than being a task-quality
+    tolerance or a formal error bound for arbitrarily ill-conditioned solves.
+    Anchor every comparison at the actual minimum (no transitive tie chains).
+    No absolute floor is used: zero beats every positive loss, and rescaling
+    the weights does not create a large absolute tie window for small losses.
+    """
+    minimum = min(item[0] for item in candidates)
+    relative_tolerance = OBS_TIE_EPS_MULTIPLIER * math.ulp(1.0) * columns
+    tolerance = minimum * relative_tolerance
+    tied = [item for item in candidates if item[0] - minimum <= tolerance]
+    chosen = min(tied, key=lambda item: item[1])
+    return chosen, {"minimum_quadratic_loss": minimum,
+        "tie_relative_tolerance": relative_tolerance,
+        "tie_absolute_tolerance": tolerance,
+        "tied_channels": sorted(item[1] for item in tied),
+        "tie_break": "lowest original channel within minimum-anchored FP64 roundoff window"}
+
+
 def _obs_groups(features, weight, group_width, keep):
     """Greedily remove channel groups with the damped OBS quadratic loss.
 
     For deleted group G and inverse covariance P, loss = tr(W_G P_GG^-1
     W_G^T). Remaining W_R -= W_G P_GG^-1 P_GR, followed by a Schur
-    complement update of P. Group order stays stable, including tied scores.
+    complement update of P. Roundoff-level loss ties use original channel order;
+    genuinely different costs still choose the smallest damped quadratic loss.
     """
     count = features.shape[1] // group_width
     if keep == count:
@@ -124,7 +148,7 @@ def _obs_groups(features, weight, group_width, keep):
             if not math.isfinite(cost):
                 raise ConversionError("Activation reconstruction OBS score contains NaN/Inf")
             candidates.append((max(0.0, cost), channel, ordinal, indices))
-        cost, channel, ordinal, removed = min(candidates, key=lambda item: item[:2])
+        (cost, channel, ordinal, removed), selection = _select_obs_candidate(candidates, len(inverse))
         mask = torch.ones(len(inverse), dtype=torch.bool)
         mask[removed] = False
         retained = torch.where(mask)[0]
@@ -137,7 +161,7 @@ def _obs_groups(features, weight, group_width, keep):
         _finite(inverse, "inverse covariance")
         _finite(current, "OBS compensation")
         remaining.pop(ordinal)
-        trace.append({"channel": channel, "quadratic_loss": cost})
+        trace.append({"channel": channel, "quadratic_loss": cost, **selection})
     return torch.tensor(remaining, dtype=torch.long), trace
 
 
