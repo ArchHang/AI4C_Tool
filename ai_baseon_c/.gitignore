@@ -1,0 +1,8 @@
+/build/
+/model/generated/
+__pycache__/
+*.pyc
+*.o
+*.a
+*.exe
+*.dll

@@ -1,0 +1,4 @@
+# Conversion-time dependencies only; generated C has no Python dependency.
+numpy>=1.23
+# GUI compatibility uses torch.serialization.get_unsafe_globals_in_checkpoint.
+torch>=2.6

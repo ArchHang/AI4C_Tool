@@ -1,0 +1,4 @@
+-r requirements.txt
+# Optional report/plot fixture tests; the C runtime needs no Python dependency.
+matplotlib>=3.7
+Pillow>=9.1

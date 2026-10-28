@@ -1,0 +1,3 @@
+# Python 3.10+; CPU-only PyTorch is sufficient for conversion and the GUI.
+# Tkinter is supplied by Python/the OS, not by pip (python3-tk on Debian/Ubuntu).
+-r tools/model_converter/requirements.txt

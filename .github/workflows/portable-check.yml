@@ -1,0 +1,90 @@
+name: Portable C library and model tools
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clean-checkout:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.10'
+            build: cmake
+            make: make
+          - os: ubuntu-latest
+            python: '3.12'
+            build: make
+            make: make
+          - os: windows-latest
+            python: '3.10'
+            build: cmake
+            make: mingw32-make
+          - os: windows-latest
+            python: '3.12'
+            build: make
+            make: mingw32-make
+    steps:
+      # Official releases checked 2026-10-28; full commit pins preserve versions.
+      # https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # https://github.com/actions/setup-python/releases/tag/v7.1.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            ai_baseon_c/requirements.txt
+            ai_baseon_c/requirements-dev.txt
+            ai_baseon_c/tools/model_converter/requirements.txt
+      # https://github.com/msys2/setup-msys2/releases/tag/v2.33.0
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        if: runner.os == 'Windows'
+        id: msys2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+      - name: Expose native Windows compiler tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          Join-Path $env:MSYS2_LOCATION 'ucrt64\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Install Linux display/build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build xvfb python3-tk
+      - name: Install CPU Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.6"
+          python -m pip install -r ai_baseon_c/requirements-dev.txt
+      - name: Check clean Linux checkout including GUI controllers
+        if: runner.os == 'Linux'
+        run: >-
+          xvfb-run -a python -s -B -X utf8 ai_baseon_c/tools/check_repository.py
+          --build-system ${{ matrix.build }} --make ${{ matrix.make }} --require-gui
+          --output artifacts/repository_check.json
+      - name: Check clean Windows checkout including GUI controllers
+        if: runner.os == 'Windows'
+        run: >-
+          python -s -B -X utf8 ai_baseon_c/tools/check_repository.py
+          --build-system ${{ matrix.build }} --make ${{ matrix.make }} --require-gui
+          --output artifacts/repository_check.json

@@ -1,0 +1,113 @@
+cmake_minimum_required(VERSION 3.21)
+project(ai_baseon_c VERSION 1.0.0 LANGUAGES C)
+
+# Some packaged GCC launchers live away from the actual binutils directory.
+# Ask the configured compiler instead of assuming ar/ranlib are its siblings.
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    foreach(nn_binutil AR RANLIB)
+        if(NOT CMAKE_${nn_binutil} OR CMAKE_${nn_binutil} STREQUAL ":")
+            string(TOLOWER "${nn_binutil}" nn_binutil_name)
+            execute_process(COMMAND "${CMAKE_C_COMPILER}" "-print-prog-name=${nn_binutil_name}"
+                OUTPUT_VARIABLE nn_binutil_path OUTPUT_STRIP_TRAILING_WHITESPACE
+                RESULT_VARIABLE nn_binutil_result)
+            if(nn_binutil_result EQUAL 0)
+                if(NOT IS_ABSOLUTE "${nn_binutil_path}")
+                    find_program(nn_binutil_program NAMES "${nn_binutil_path}")
+                    set(nn_binutil_path "${nn_binutil_program}")
+                    unset(nn_binutil_program CACHE)
+                endif()
+                if(EXISTS "${nn_binutil_path}")
+                    cmake_path(NORMAL_PATH nn_binutil_path)
+                    set(CMAKE_${nn_binutil} "${nn_binutil_path}" CACHE FILEPATH "GNU binutils" FORCE)
+                    set(CMAKE_${nn_binutil} "${nn_binutil_path}")
+                endif()
+            endif()
+        endif()
+    endforeach()
+endif()
+
+include(GNUInstallDirs)
+
+set(NN_BACKEND "auto" CACHE STRING "Integer kernel backend: auto, portable, arm_dsp, neon, avx2")
+set_property(CACHE NN_BACKEND PROPERTY STRINGS auto portable arm_dsp neon avx2)
+option(NN_BUILD_TESTS "Build desktop validation programs" OFF)
+option(NN_WARNINGS_AS_ERRORS "Treat library and test warnings as errors" ON)
+option(NN_REPRODUCIBLE_FP "Disable floating point contraction and unsafe math" ON)
+
+if(NOT NN_BACKEND MATCHES "^(auto|portable|arm_dsp|neon|avx2)$")
+    message(FATAL_ERROR "Unsupported NN_BACKEND=${NN_BACKEND}")
+endif()
+
+add_library(ai_baseon_c STATIC src/cnn.c src/rnn.c src/lstm.c src/platform.c)
+add_library(ai_baseon_c::ai_baseon_c ALIAS ai_baseon_c)
+target_compile_features(ai_baseon_c PUBLIC c_std_11)
+set_target_properties(ai_baseon_c PROPERTIES C_EXTENSIONS OFF)
+target_include_directories(ai_baseon_c PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+string(TOUPPER "${NN_BACKEND}" nn_backend_upper)
+target_compile_definitions(ai_baseon_c PUBLIC "NN_BACKEND=NN_BACKEND_${nn_backend_upper}")
+
+if(NN_BACKEND STREQUAL "avx2")
+    if(MSVC)
+        target_compile_options(ai_baseon_c PUBLIC /arch:AVX2)
+    else()
+        target_compile_options(ai_baseon_c PUBLIC -mavx2)
+    endif()
+endif()
+
+function(nn_set_compile_options target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4)
+        if(NN_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE /WX)
+        endif()
+        if(NN_REPRODUCIBLE_FP)
+            target_compile_options(${target} PRIVATE /fp:strict)
+        endif()
+    elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target} PRIVATE -Wall -Wextra)
+        if(NN_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE -Werror)
+        endif()
+        if(NN_REPRODUCIBLE_FP)
+            target_compile_options(${target} PRIVATE -ffp-contract=off -fno-fast-math)
+        endif()
+    endif()
+endfunction()
+
+nn_set_compile_options(ai_baseon_c)
+if(NOT MSVC)
+    target_link_libraries(ai_baseon_c PUBLIC m)
+endif()
+
+if(NN_BUILD_TESTS)
+    if(CMAKE_CROSSCOMPILING)
+        message(FATAL_ERROR "NN_BUILD_TESTS runs desktop programs; disable it for bare-metal builds")
+    endif()
+    enable_testing()
+    foreach(nn_test kernels fused rnn lstm backend)
+        add_executable(test_${nn_test} tests/test_${nn_test}.c)
+        # Existing Python validators intentionally use the same suffix on every desktop OS.
+        set_target_properties(test_${nn_test} PROPERTIES SUFFIX ".exe" C_EXTENSIONS OFF)
+        target_link_libraries(test_${nn_test} PRIVATE ai_baseon_c)
+        target_include_directories(test_${nn_test} PRIVATE examples/models src)
+        nn_set_compile_options(test_${nn_test})
+    endforeach()
+    target_compile_definitions(test_kernels PRIVATE TEST_HAS_SCRATCH=1)
+    add_test(NAME kernels COMMAND test_kernels)
+    add_test(NAME fused COMMAND test_fused)
+    add_test(NAME backend COMMAND test_backend)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME robustness COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_robustness.py"
+            --exe $<TARGET_FILE:test_kernels> --scratch)
+    endif()
+endif()
+
+install(TARGETS ai_baseon_c EXPORT ai_baseon_c_targets
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+install(DIRECTORY include/ai_baseon_c DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+install(EXPORT ai_baseon_c_targets FILE ai_baseon_c-config.cmake
+    NAMESPACE ai_baseon_c:: DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ai_baseon_c")

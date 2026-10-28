@@ -1,0 +1,650 @@
+{
+  "schema": "ai4c_public_benchmark_summary_v1",
+  "measured_date": "2026-10-28",
+  "source_audit_sha256": "1b01bdb89abbd5068d82cc5a02b184604d6b3a514f17ee182e8745d0aa6c0e8c",
+  "source_resource_ledger_sha256": "ec868bcfd81a1f24382586695f6ec3b43e6ba5f9473c8bf85d643f67d261272d",
+  "conditions": {
+    "processor": "STM32F446 Cortex-M4F",
+    "clock_hz": 168000000,
+    "tick_hz": 1000,
+    "compiler": "Arm GCC 14.3.1",
+    "optimization": "O3; hard float; no fast-math; fp-contract=off",
+    "timing": "unprofiled single forward + argmax; interrupts retained",
+    "excluded_from_timing": [
+      "audio frontend",
+      "UART",
+      "CRC",
+      "printing",
+      "initialization",
+      "FP32 input dequantization"
+    ],
+    "warmup_per_case": 0
+  },
+  "evaluation": {
+    "classes": [
+      "no_speech",
+      "other_speaker",
+      "target_speaker_A",
+      "target_speaker_B"
+    ],
+    "class_support": [
+      788,
+      800,
+      139,
+      42
+    ],
+    "frames_per_precision": 1769,
+    "wav_files": 25,
+    "named_target_test_wavs_each": 1,
+    "final_cases": 6,
+    "physical_inferences": 10614,
+    "all_board_to_corresponding_host_logits_bit_exact": true,
+    "raw_recordings_or_checkpoints_included": false,
+    "host_latency_measured": false
+  },
+  "models": {
+    "cnn": {
+      "checkpoint_sha256": "a3b8855ccb073abb72b6aec5bb5b1065631abbd33adeca81ac7626afe215e6b9",
+      "dimensions": {
+        "input_channels": 32,
+        "input_length": 64,
+        "input_elements": 2048,
+        "num_classes": 4,
+        "hidden_size": 48,
+        "flatten_size": 192,
+        "conv_shapes": [
+          [
+            24,
+            32,
+            5,
+            60,
+            30
+          ],
+          [
+            32,
+            24,
+            5,
+            26,
+            13
+          ],
+          [
+            48,
+            32,
+            5,
+            9,
+            4
+          ]
+        ]
+      },
+      "training_parameters": 25028,
+      "matrix_weight_elements": 24768,
+      "macs_per_inference": 408768,
+      "precisions": {
+        "fp32": {
+          "elf_sha256": "61f9298edf691171f32ddd5939e74e5b788c33bdb7ab287ae6dbd1a188e5aaa7",
+          "flash": {
+            "firmware_text_plus_data_bytes": 138688,
+            "model_constants_bytes": 100648,
+            "category_bytes": {
+              "fp32_weight": 99072,
+              "int8_weight": 0,
+              "bias": 624,
+              "weight_scale": 0,
+              "row_sum": 0,
+              "bn_identity_gamma": 416,
+              "bn_zero": 416,
+              "descriptor": 120
+            },
+            "symbol_count": 22,
+            "elf_nm_c_sets_equal": true,
+            "alias_or_overlap_count": 0,
+            "weight_bytes": 99072,
+            "fp32_weight_bytes": 99072,
+            "int8_weight_bytes": 0,
+            "bias_bytes": 624,
+            "weight_scale_bytes": 0,
+            "row_sum_bytes": 0,
+            "bn_auxiliary_bytes": 832,
+            "descriptor_bytes": 120,
+            "other_firmware_bytes": 38040
+          },
+          "ram": {
+            "static_data_plus_bss_bytes": 59648,
+            "workspace_bytes": 9280,
+            "input_staging_bytes": 8192,
+            "linker_heap_stack_reserved_bytes": 1540,
+            "rtos_heap_arena_bytes": 32768,
+            "minimum_observed_stack_free_bytes": 2240
+          },
+          "metrics": {
+            "frames": 1769,
+            "correct": 1607,
+            "accuracy": 0.9084228377614472,
+            "macro_recall": 0.8005787914990705,
+            "per_class_recall": [
+              0.9111675126903553,
+              0.94,
+              0.8273381294964028,
+              0.5238095238095238
+            ],
+            "class_support": [
+              788,
+              800,
+              139,
+              42
+            ],
+            "confusion_matrix_label_rows": [
+              [
+                718,
+                67,
+                3,
+                0
+              ],
+              [
+                21,
+                752,
+                27,
+                0
+              ],
+              [
+                2,
+                21,
+                115,
+                1
+              ],
+              [
+                0,
+                20,
+                0,
+                22
+              ]
+            ],
+            "median_cycles": 3866412,
+            "p95_cycles": 3866967,
+            "median_ms": 23.014357142857143,
+            "p95_ms": 23.017660714285714,
+            "host_latency_measured": false,
+            "host_reference_bit_exact_frames": 1769
+          }
+        },
+        "int8": {
+          "elf_sha256": "a13bfdcab4726c39067c076c99f5c361a7c349144e8736a1dc2e962bb8a91d21",
+          "flash": {
+            "firmware_text_plus_data_bytes": 73804,
+            "model_constants_bytes": 26100,
+            "category_bytes": {
+              "fp32_weight": 0,
+              "int8_weight": 24768,
+              "bias": 624,
+              "weight_scale": 624,
+              "row_sum": 0,
+              "bn_identity_gamma": 0,
+              "bn_zero": 0,
+              "descriptor": 84
+            },
+            "symbol_count": 18,
+            "elf_nm_c_sets_equal": true,
+            "alias_or_overlap_count": 0,
+            "weight_bytes": 24768,
+            "fp32_weight_bytes": 0,
+            "int8_weight_bytes": 24768,
+            "bias_bytes": 624,
+            "weight_scale_bytes": 624,
+            "row_sum_bytes": 0,
+            "bn_auxiliary_bytes": 0,
+            "descriptor_bytes": 84,
+            "other_firmware_bytes": 47704
+          },
+          "ram": {
+            "static_data_plus_bss_bytes": 48480,
+            "workspace_bytes": 6304,
+            "input_staging_bytes": 0,
+            "linker_heap_stack_reserved_bytes": 1540,
+            "rtos_heap_arena_bytes": 32768,
+            "minimum_observed_stack_free_bytes": 1416
+          },
+          "metrics": {
+            "frames": 1769,
+            "correct": 1599,
+            "accuracy": 0.9039005087620124,
+            "macro_recall": 0.8152552091756616,
+            "per_class_recall": [
+              0.8984771573604061,
+              0.935,
+              0.8561151079136691,
+              0.5714285714285714
+            ],
+            "class_support": [
+              788,
+              800,
+              139,
+              42
+            ],
+            "confusion_matrix_label_rows": [
+              [
+                708,
+                75,
+                5,
+                0
+              ],
+              [
+                21,
+                748,
+                31,
+                0
+              ],
+              [
+                2,
+                18,
+                119,
+                0
+              ],
+              [
+                0,
+                18,
+                0,
+                24
+              ]
+            ],
+            "median_cycles": 1934227,
+            "p95_cycles": 1936567,
+            "median_ms": 11.513255952380952,
+            "p95_ms": 11.527184523809524,
+            "host_latency_measured": false,
+            "host_reference_bit_exact_frames": 1769
+          }
+        }
+      },
+      "int8_weight_scaling": "mse"
+    },
+    "rnn": {
+      "checkpoint_sha256": "c79181dad8b5b10cb6580ea2275bdf5ef5ba23a0747b86c71c1807273959e72a",
+      "dimensions": {
+        "input_size": 128,
+        "hidden_size": 96,
+        "seq_length": 16,
+        "input_elements": 2048,
+        "num_classes": 4
+      },
+      "training_parameters": 22084,
+      "matrix_weight_elements": 21888,
+      "macs_per_inference": 344448,
+      "precisions": {
+        "fp32": {
+          "elf_sha256": "61ffd884ff7823c087f679b64fd8838c30915b7bfe69681decc8154b60b4aa54",
+          "flash": {
+            "firmware_text_plus_data_bytes": 125784,
+            "model_constants_bytes": 88376,
+            "category_bytes": {
+              "fp32_weight": 87552,
+              "int8_weight": 0,
+              "bias": 784,
+              "weight_scale": 0,
+              "row_sum": 0,
+              "bn_identity_gamma": 0,
+              "bn_zero": 0,
+              "descriptor": 40
+            },
+            "symbol_count": 8,
+            "elf_nm_c_sets_equal": true,
+            "alias_or_overlap_count": 0,
+            "weight_bytes": 87552,
+            "fp32_weight_bytes": 87552,
+            "int8_weight_bytes": 0,
+            "bias_bytes": 784,
+            "weight_scale_bytes": 0,
+            "row_sum_bytes": 0,
+            "bn_auxiliary_bytes": 0,
+            "descriptor_bytes": 40,
+            "other_firmware_bytes": 37408
+          },
+          "ram": {
+            "static_data_plus_bss_bytes": 56512,
+            "workspace_bytes": 6144,
+            "input_staging_bytes": 8192,
+            "linker_heap_stack_reserved_bytes": 1540,
+            "rtos_heap_arena_bytes": 32768,
+            "minimum_observed_stack_free_bytes": 2240
+          },
+          "metrics": {
+            "frames": 1769,
+            "correct": 1585,
+            "accuracy": 0.8959864330130017,
+            "macro_recall": 0.8488257258587619,
+            "per_class_recall": [
+              0.8857868020304569,
+              0.9225,
+              0.8489208633093526,
+              0.7380952380952381
+            ],
+            "class_support": [
+              788,
+              800,
+              139,
+              42
+            ],
+            "confusion_matrix_label_rows": [
+              [
+                698,
+                87,
+                2,
+                1
+              ],
+              [
+                16,
+                738,
+                45,
+                1
+              ],
+              [
+                4,
+                16,
+                118,
+                1
+              ],
+              [
+                0,
+                11,
+                0,
+                31
+              ]
+            ],
+            "median_cycles": 2587571,
+            "p95_cycles": 2594835,
+            "median_ms": 15.402208333333334,
+            "p95_ms": 15.445446428571428,
+            "host_latency_measured": false,
+            "host_reference_bit_exact_frames": 1769
+          }
+        },
+        "int8": {
+          "elf_sha256": "0727be99b4c2d02557ce24722817bba81ac02b93e2a90433be57ae8024d062a7",
+          "flash": {
+            "firmware_text_plus_data_bytes": 67668,
+            "model_constants_bytes": 24284,
+            "category_bytes": {
+              "fp32_weight": 0,
+              "int8_weight": 21888,
+              "bias": 784,
+              "weight_scale": 784,
+              "row_sum": 768,
+              "bn_identity_gamma": 0,
+              "bn_zero": 0,
+              "descriptor": 60
+            },
+            "symbol_count": 13,
+            "elf_nm_c_sets_equal": true,
+            "alias_or_overlap_count": 0,
+            "weight_bytes": 21888,
+            "fp32_weight_bytes": 0,
+            "int8_weight_bytes": 21888,
+            "bias_bytes": 784,
+            "weight_scale_bytes": 784,
+            "row_sum_bytes": 768,
+            "bn_auxiliary_bytes": 0,
+            "descriptor_bytes": 60,
+            "other_firmware_bytes": 43384
+          },
+          "ram": {
+            "static_data_plus_bss_bytes": 46272,
+            "workspace_bytes": 4096,
+            "input_staging_bytes": 0,
+            "linker_heap_stack_reserved_bytes": 1540,
+            "rtos_heap_arena_bytes": 32768,
+            "minimum_observed_stack_free_bytes": 2272
+          },
+          "metrics": {
+            "frames": 1769,
+            "correct": 1588,
+            "accuracy": 0.8976823063877897,
+            "macro_recall": 0.8456427182402012,
+            "per_class_recall": [
+              0.8946700507614214,
+              0.9175,
+              0.8561151079136691,
+              0.7142857142857143
+            ],
+            "class_support": [
+              788,
+              800,
+              139,
+              42
+            ],
+            "confusion_matrix_label_rows": [
+              [
+                705,
+                79,
+                3,
+                1
+              ],
+              [
+                16,
+                734,
+                49,
+                1
+              ],
+              [
+                4,
+                15,
+                119,
+                1
+              ],
+              [
+                0,
+                12,
+                0,
+                30
+              ]
+            ],
+            "median_cycles": 1584071,
+            "p95_cycles": 1589942,
+            "median_ms": 9.428994047619048,
+            "p95_ms": 9.463940476190476,
+            "host_latency_measured": false,
+            "host_reference_bit_exact_frames": 1769
+          }
+        }
+      },
+      "int8_weight_scaling": "mse"
+    },
+    "lstm": {
+      "checkpoint_sha256": "b6f92fc773a6efb6315c3997974e52a39ee03d1f6d63e2c6c8be0c2b4b7bf0d2",
+      "dimensions": {
+        "input_size": 64,
+        "hidden_size": 64,
+        "seq_length": 32,
+        "input_elements": 2048,
+        "num_classes": 4
+      },
+      "training_parameters": 33540,
+      "matrix_weight_elements": 33024,
+      "macs_per_inference": 1048832,
+      "precisions": {
+        "fp32": {
+          "elf_sha256": "f5e4e93b933dcc3f0e6614d5ee37ac2bdb01122b256f459bf3c01efce0a0e2a6",
+          "flash": {
+            "firmware_text_plus_data_bytes": 179236,
+            "model_constants_bytes": 133172,
+            "category_bytes": {
+              "fp32_weight": 132096,
+              "int8_weight": 0,
+              "bias": 1040,
+              "weight_scale": 0,
+              "row_sum": 0,
+              "bn_identity_gamma": 0,
+              "bn_zero": 0,
+              "descriptor": 36
+            },
+            "symbol_count": 7,
+            "elf_nm_c_sets_equal": true,
+            "alias_or_overlap_count": 0,
+            "weight_bytes": 132096,
+            "fp32_weight_bytes": 132096,
+            "int8_weight_bytes": 0,
+            "bias_bytes": 1040,
+            "weight_scale_bytes": 0,
+            "row_sum_bytes": 0,
+            "bn_auxiliary_bytes": 0,
+            "descriptor_bytes": 36,
+            "other_firmware_bytes": 46064
+          },
+          "ram": {
+            "static_data_plus_bss_bytes": 58816,
+            "workspace_bytes": 8448,
+            "input_staging_bytes": 8192,
+            "linker_heap_stack_reserved_bytes": 1540,
+            "rtos_heap_arena_bytes": 32768,
+            "minimum_observed_stack_free_bytes": 2208
+          },
+          "metrics": {
+            "frames": 1769,
+            "correct": 1623,
+            "accuracy": 0.9174674957603166,
+            "macro_recall": 0.8711412249823056,
+            "per_class_recall": [
+              0.8959390862944162,
+              0.95125,
+              0.8992805755395683,
+              0.7380952380952381
+            ],
+            "class_support": [
+              788,
+              800,
+              139,
+              42
+            ],
+            "confusion_matrix_label_rows": [
+              [
+                706,
+                82,
+                0,
+                0
+              ],
+              [
+                15,
+                761,
+                22,
+                2
+              ],
+              [
+                2,
+                12,
+                125,
+                0
+              ],
+              [
+                0,
+                11,
+                0,
+                31
+              ]
+            ],
+            "median_cycles": 12800085,
+            "p95_cycles": 12817421,
+            "median_ms": 76.19098214285714,
+            "p95_ms": 76.29417261904761,
+            "host_latency_measured": false,
+            "host_reference_bit_exact_frames": 1769
+          }
+        },
+        "int8": {
+          "elf_sha256": "c80d03fd8cce4c2c76252180f609ae282cd73bdeaacb293e1f5f28db40641ba7",
+          "flash": {
+            "firmware_text_plus_data_bytes": 80432,
+            "model_constants_bytes": 38232,
+            "category_bytes": {
+              "fp32_weight": 0,
+              "int8_weight": 33024,
+              "bias": 1040,
+              "weight_scale": 2064,
+              "row_sum": 2048,
+              "bn_identity_gamma": 0,
+              "bn_zero": 0,
+              "descriptor": 56
+            },
+            "symbol_count": 12,
+            "elf_nm_c_sets_equal": true,
+            "alias_or_overlap_count": 0,
+            "weight_bytes": 33024,
+            "fp32_weight_bytes": 0,
+            "int8_weight_bytes": 33024,
+            "bias_bytes": 1040,
+            "weight_scale_bytes": 2064,
+            "row_sum_bytes": 2048,
+            "bn_auxiliary_bytes": 0,
+            "descriptor_bytes": 56,
+            "other_firmware_bytes": 42200
+          },
+          "ram": {
+            "static_data_plus_bss_bytes": 48064,
+            "workspace_bytes": 5888,
+            "input_staging_bytes": 0,
+            "linker_heap_stack_reserved_bytes": 1540,
+            "rtos_heap_arena_bytes": 32768,
+            "minimum_observed_stack_free_bytes": 2240
+          },
+          "metrics": {
+            "frames": 1769,
+            "correct": 1628,
+            "accuracy": 0.9202939513849633,
+            "macro_recall": 0.8727180016320518,
+            "per_class_recall": [
+              0.899746192893401,
+              0.95375,
+              0.8992805755395683,
+              0.7380952380952381
+            ],
+            "class_support": [
+              788,
+              800,
+              139,
+              42
+            ],
+            "confusion_matrix_label_rows": [
+              [
+                709,
+                79,
+                0,
+                0
+              ],
+              [
+                15,
+                763,
+                21,
+                1
+              ],
+              [
+                3,
+                11,
+                125,
+                0
+              ],
+              [
+                0,
+                11,
+                0,
+                31
+              ]
+            ],
+            "median_cycles": 5502767,
+            "p95_cycles": 5517994,
+            "median_ms": 32.75456547619048,
+            "p95_ms": 32.84520238095238,
+            "host_latency_measured": false,
+            "host_reference_bit_exact_frames": 1769
+          }
+        }
+      },
+      "int8_weight_scaling": "maxabs"
+    }
+  },
+  "limitations": [
+    "Previously observed frozen regression set, not an unseen new speaker population",
+    "Only two named target speakers and one testWAV each; correlated frames",
+    "Each FP32/INT8 pair uses one checkpoint; architectures use different capacity budgets",
+    "CNN/RNN FP32 used explicit exact independent ordered-reference admission; original PyTorch tolerance failures retained locally",
+    "Source publication omits private recordings, trained speaker checkpoints, raw UART and complete original hardware project",
+    "Aggregate JSON is a report snapshot, not a replacement for the private physical audit",
+    "No current, energy, long-duration, cold-start or non-F446 physical performance measurement"
+  ]
+}
