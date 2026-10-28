@@ -7,6 +7,7 @@ from dataclasses import replace
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 import sys
 import tempfile
@@ -236,15 +237,30 @@ class CompressionTests(unittest.TestCase):
             inputs = np.random.default_rng(402).integers(0, 256, (6, elements), dtype=np.uint8)
             shape = (1, 64) if kind == "cnn" else (5, 3)
             values = torch.from_numpy((inputs.astype(np.float32) - 128) * np.float32(0.01)).reshape(6, *shape)
+            # Match evaluate_sessions: ordinary model parameters are created
+            # before inference_mode. Creating parameters inside that context
+            # instead makes inference tensors and can change RNN dispatch and
+            # FP32 rounding, even with identical weights and input values.
+            ref_model, cand_model = build_model(session), build_model(candidate)
             with torch.inference_mode():
-                ref_logits = build_model(session)(values).numpy()
-                cand_logits = build_model(candidate)(values).numpy()
+                ref_logits = ref_model(values).numpy()
+                cand_logits = cand_model(values).numpy()
             labels = ref_logits.argmax(1)
             difference = cand_logits.astype(np.float64) - ref_logits.astype(np.float64)
+            captured = {"reference": [], "candidate": []}
+            def recording_builder(model_session):
+                self.assertFalse(torch.is_inference_mode_enabled())
+                model = build_model(model_session)
+                self.assertTrue(all(not parameter.is_inference() for parameter in model.parameters()))
+                key = "reference" if model_session is session else "candidate"
+                model.register_forward_hook(lambda _, arguments, output:
+                    captured[key].append((arguments[0].numpy().copy(), output.numpy().copy())))
+                return model
             with tempfile.TemporaryDirectory(prefix=".studio-test-", dir=LIBRARY) as directory:
                 dataset = Path(directory) / "data.npz"
                 np.savez(dataset, inputs=inputs, labels=labels)
-                report = evaluate_sessions(session, candidate, dataset, input_scale=0.01, input_zero_point=128)
+                with patch("model_studio.validation.build_model", side_effect=recording_builder):
+                    report = evaluate_sessions(session, candidate, dataset, input_scale=0.01, input_zero_point=128)
                 self.assertEqual(report["samples"], 6)
                 self.assertAlmostEqual(report["max_abs_error"], float(np.abs(difference).max()), places=7)
                 self.assertAlmostEqual(report["rmse"], float(np.sqrt(np.mean(difference ** 2))), places=7)
@@ -252,6 +268,22 @@ class CompressionTests(unittest.TestCase):
                 self.assertEqual(report["reference_accuracy"], 1)
                 self.assertEqual(report["candidate_accuracy"], float(np.mean(cand_logits.argmax(1) == labels)))
                 self.assertEqual(report["device"], "cpu")
+                # Separately verify the metric against the very logits used by
+                # this evaluation, using scalar FP64 arithmetic. This isolates
+                # statistics/preprocessing correctness from repeated backend
+                # inference and its FP32 rounding.
+                expected_values = np.array([np.float32(int(value) - 128) * np.float32(0.01)
+                    for value in inputs.flat], dtype=np.float32).reshape(6, *shape)
+                for key in captured:
+                    self.assertEqual(len(captured[key]), 1)
+                    np.testing.assert_array_equal(captured[key][0][0].view(np.uint32),
+                                                  expected_values.view(np.uint32))
+                actual_ref, actual_cand = captured["reference"][0][1], captured["candidate"][0][1]
+                actual_difference = [float(right) - float(left)
+                    for left, right in zip(actual_ref.flat, actual_cand.flat)]
+                self.assertEqual(report["max_abs_error"], max(abs(value) for value in actual_difference))
+                self.assertAlmostEqual(report["rmse"], math.sqrt(math.fsum(value * value
+                    for value in actual_difference) / len(actual_difference)), places=15)
                 json.dumps(report, allow_nan=False)
                 floating = Path(directory) / "float.npy"
                 np.save(floating, values.numpy())
@@ -261,6 +293,66 @@ class CompressionTests(unittest.TestCase):
                 self.assertIsNone(identity["candidate_accuracy"])
                 self.assertIn("accuracy_unknown", identity["quality_status"])
                 self.assertEqual(identity["input_interpretation"], "preprocessed_float")
+
+    def test_metrics_known_exact_logits_and_preprocessing_across_batch_boundaries(self):
+        session, _ = make_session("rnn")
+        candidate, _ = prune_session(session, 0.5)
+        quantized = np.full((5, 15), 128, dtype=np.uint8)
+        quantized[:, 0] = [0, 64, 128, 192, 255]
+        # Integer centering and a binary-exact 1/4 scale define the expected
+        # inputs without sharing NumPy's array preprocessing expression.
+        floating = np.array([[(int(value) - 128) / 4 for value in row]
+                             for row in quantized], dtype=np.float32).reshape(5, 5, 3)
+        x = [-32.0, -16.0, 0.0, 16.0, 31.75]
+        reference_logits = [(value, -value, 0.0) for value in x]
+        candidate_logits = [(-value, value, 4.0) for value in x]
+        deltas = [right - left for original, pruned in zip(reference_logits, candidate_logits)
+                  for left, right in zip(original, pruned)]
+        expected_rmse = math.sqrt(math.fsum(value * value for value in deltas) / len(deltas))
+        labels = np.array([0, 1, 2, 1, 0], dtype=np.int64)
+        seen = {"reference": [], "candidate": []}
+
+        class KnownLogits(nn.Module):
+            def __init__(self, key):
+                super().__init__()
+                self.key = key
+
+            def forward(self, values):
+                seen[self.key].append(values.numpy().copy())
+                first = values.reshape(len(values), -1)[:, 0]
+                if self.key == "reference":
+                    return torch.stack((first, -first, torch.zeros_like(first)), dim=1)
+                return torch.stack((-first, first, torch.full_like(first, 4)), dim=1)
+
+        def known_builder(model_session):
+            self.assertFalse(torch.is_inference_mode_enabled())
+            return KnownLogits("reference" if model_session is session else "candidate")
+
+        with tempfile.TemporaryDirectory(prefix=".studio-test-", dir=LIBRARY) as directory:
+            path = Path(directory) / "metrics.npz"
+            for inputs in (quantized, floating):
+                np.savez(path, inputs=inputs, labels=labels)
+                for batch_size in (1, 2, 3, 5):
+                    with self.subTest(dtype=str(inputs.dtype), batch_size=batch_size):
+                        seen["reference"].clear()
+                        seen["candidate"].clear()
+                        with patch("model_studio.validation.BATCH_SIZE", batch_size), \
+                                patch("model_studio.validation.build_model", side_effect=known_builder):
+                            report = evaluate_sessions(session, candidate, path,
+                                input_scale=0.25 if inputs.dtype == np.uint8 else 123,
+                                input_zero_point=128)
+                        self.assertEqual(report["samples"], 5)
+                        self.assertEqual(report["batch_size"], batch_size)
+                        self.assertEqual(report["max_abs_error"], 64.0)
+                        self.assertEqual(report["rmse"], expected_rmse)
+                        self.assertEqual(report["prediction_agreement"], 0.0)
+                        self.assertEqual(report["reference_accuracy"], 2 / 5)
+                        self.assertEqual(report["candidate_accuracy"], 3 / 5)
+                        for batches in seen.values():
+                            self.assertEqual([len(batch) for batch in batches],
+                                [min(batch_size, 5 - start) for start in range(0, 5, batch_size)])
+                            np.testing.assert_array_equal(np.concatenate(batches).view(np.uint32),
+                                                          floating.view(np.uint32))
 
     def test_manifest_fixed_frame_split_and_rejection(self):
         session, _ = make_session("rnn")
